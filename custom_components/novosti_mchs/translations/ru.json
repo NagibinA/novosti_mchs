@@ -1,0 +1,36 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Настройка RSS Новости МЧС",
+        "description": "Введите URL RSS-ленты и количество сенсоров для карточки новостей",
+        "data": {
+          "name": "Название источника",
+          "rss_url": "URL RSS-ленты",
+          "sources_count": "Количество сенсоров (1-5)"
+        },
+        "description_placeholders": {
+          "example_url": "Пример: https://78.mchs.gov.ru/deyatelnost/press-centr/operativnaya-informaciya/rss"
+        }
+      }
+    },
+    "error": {
+      "invalid_url": "Неверный URL. Убедитесь, что он начинается с http:// или https://",
+      "already_configured": "Этот RSS-источник уже настроен"
+    },
+    "abort": {
+      "already_configured": "Этот RSS-источник уже настроен"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Настройки RSS Новости МЧС",
+        "data": {
+          "rss_url": "URL RSS-ленты",
+          "sources_count": "Количество сенсоров (1-5)"
+        }
+      }
+    }
+  }
+}
