@@ -3,11 +3,11 @@
     "step": {
       "user": {
         "title": "Настройка RSS Новости МЧС",
-        "description": "Введите URL RSS-ленты и количество сенсоров для карточки новостей",
+        "description": "Введите URL RSS-ленты для получения новостей",
         "data": {
           "name": "Название источника",
           "rss_url": "URL RSS-ленты",
-          "sources_count": "Количество сенсоров (1-5)"
+          "scan_interval": "Интервал обновления (сек)"
         },
         "description_placeholders": {
           "example_url": "Пример: https://78.mchs.gov.ru/deyatelnost/press-centr/operativnaya-informaciya/rss"
@@ -28,7 +28,7 @@
         "title": "Настройки RSS Новости МЧС",
         "data": {
           "rss_url": "URL RSS-ленты",
-          "sources_count": "Количество сенсоров (1-5)"
+          "scan_interval": "Интервал обновления (сек)"
         }
       }
     }
