@@ -398,5 +398,5 @@ class RSSNewsSensor(CoordinatorEntity[RSSDataUpdateCoordinator], SensorEntity):
             "name": self._attr_name,
             "manufacturer": "МЧС России",
             "model": "RSS Новости",
-            "sw_version": "1.1.0",
+            "sw_version": "1.0.0",
         }
