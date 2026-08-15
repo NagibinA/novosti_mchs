@@ -175,7 +175,7 @@ class RSSDataUpdateCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                     filtered.append(article)
                     break
         
-        # Если ничего не найдено, показываем первые 3 новости (на всякий случай)
+        # Если ничего не найдено, показываем первые 3 новости
         if not filtered:
             _LOGGER.debug("⚠️ Новостей со сводкой ЧС не найдено, показываем первые 3")
             return articles[:3]
@@ -193,9 +193,8 @@ class RSSDataUpdateCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             items = root.findall(".//item")
             _LOGGER.debug("   Найдено элементов <item>: %d", len(items))
             
-            for idx, item in enumerate(items[:20]):  # Берём больше, чтобы было из чего фильтровать
+            for idx, item in enumerate(items[:20]):
                 try:
-                    # Извлекаем данные с проверкой на None
                     title_elem = item.find("title")
                     link_elem = item.find("link")
                     description_elem = item.find("description")
@@ -206,10 +205,7 @@ class RSSDataUpdateCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                     description = description_elem.text if description_elem is not None else ""
                     pub_date = pub_date_elem.text if pub_date_elem is not None and pub_date_elem.text else ""
                     
-                    # Очищаем описание
                     description_clean = self._clean_description(description)
-                    
-                    # Ищем картинку
                     image = self._extract_image(item)
                     
                     article = {
@@ -240,11 +236,8 @@ class RSSDataUpdateCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         if not description:
             return ""
         
-        # Удаляем HTML-теги
         clean = re.sub(r"<[^>]+>", "", description)
-        # Удаляем лишние пробелы
         clean = re.sub(r"\s+", " ", clean).strip()
-        # Обрезаем до 500 символов
         if len(clean) > 500:
             clean = clean[:500] + "..."
         return clean
@@ -252,28 +245,24 @@ class RSSDataUpdateCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
     def _extract_image(self, item: ET.Element) -> Optional[str]:
         """Извлечение изображения из элемента."""
         try:
-            # 1. Проверяем <enclosure>
             enclosure = item.find("enclosure")
             if enclosure is not None:
                 url = enclosure.get("url")
                 if url:
                     return url
             
-            # 2. Проверяем <media:content>
             media = item.find("media:content")
             if media is not None:
                 url = media.get("url")
                 if url:
                     return url
             
-            # 3. Проверяем <media:thumbnail>
             thumbnail = item.find("media:thumbnail")
             if thumbnail is not None:
                 url = thumbnail.get("url")
                 if url:
                     return url
             
-            # 4. Ищем в <description>
             description = item.find("description")
             if description is not None and description.text:
                 img_match = re.search(
@@ -308,8 +297,8 @@ class RSSNewsSensor(CoordinatorEntity[RSSDataUpdateCoordinator], SensorEntity):
         
         self._base_name = base_name
         
-        self._attr_name = "Сводка ЧС и происшествий"
-        self._attr_unique_id = f"{DOMAIN}_emergency"
+        self._attr_name = "Новости МЧС"
+        self._attr_unique_id = f"{DOMAIN}_1"
         self._attr_icon = "mdi:alert-circle"
         self._attr_native_unit_of_measurement = "нов."
 
@@ -337,7 +326,7 @@ class RSSNewsSensor(CoordinatorEntity[RSSDataUpdateCoordinator], SensorEntity):
         
         return {
             ATTR_ARTICLES: articles,
-            "source_name": self._attr_name,
+            "source_name": "Сводка ЧС и происшествий",
             "count": len(articles),
             "last_update": self.coordinator.last_update_success,
             "error": self.coordinator.last_error,
@@ -357,5 +346,5 @@ class RSSNewsSensor(CoordinatorEntity[RSSDataUpdateCoordinator], SensorEntity):
             "name": self._attr_name,
             "manufacturer": "МЧС России",
             "model": "RSS Сводка ЧС",
-            "sw_version": "1.1.0",
+            "sw_version": "1.1.1",
         }
