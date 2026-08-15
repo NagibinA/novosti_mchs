@@ -1,4 +1,4 @@
-"""Интеграция Новости МЧС."""
+"""Интеграция Новости МЧС для Home Assistant."""
 import os
 import shutil
 import logging
@@ -13,17 +13,26 @@ _LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Настройка интеграции."""
+    """Настройка интеграции из конфигурации."""
+    # Сохраняем данные конфигурации
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = entry.data
 
-    # Настраиваем сенсоры
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    # 1. Настраиваем сенсоры
+    try:
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        _LOGGER.info("✅ Сенсоры Новости МЧС настроены")
+    except Exception as e:
+        _LOGGER.error("❌ Ошибка настройки сенсоров: %s", e)
+        return False
 
-    # 🔥 Копируем карточку (исправленный путь)
-    await hass.async_add_executor_job(_copy_lovelace_files, hass)
+    # 2. Копируем карточку в www/community/
+    try:
+        await hass.async_add_executor_job(_copy_lovelace_files, hass)
+    except Exception as e:
+        _LOGGER.error("❌ Ошибка копирования карточки: %s", e)
 
-    # Регистрируем карточку
+    # 3. Регистрируем карточку как ресурс Lovelace
     card_url = "/local/community/novosti_mchs/lovelace/news-mchs-card.js"
     try:
         await hass.services.async_call(
@@ -32,13 +41,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             {"url": card_url, "type": "module"},
             blocking=True,
         )
-        _LOGGER.info("✅ Карточка Новости МЧС зарегистрирована")
+        _LOGGER.info("✅ Карточка Новости МЧС зарегистрирована в Lovelace")
     except Exception as e:
         _LOGGER.warning(
-            "⚠️ Не удалось зарегистрировать карточку: %s\n"
-            "   Добавьте ресурс вручную: Настройки → Панели → Ресурсы → Добавить ресурс\n"
+            "⚠️ Не удалось автоматически зарегистрировать карточку: %s\n"
+            "   Добавьте ресурс вручную: Settings → Dashboards → Resources → Add Resource\n"
             "   URL: %s\n"
-            "   Тип: JavaScript Module",
+            "   Type: JavaScript Module",
             e, card_url
         )
 
@@ -46,30 +55,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 def _copy_lovelace_files(hass):
-    """Копирует файлы карточки в www/community."""
-    # 🔥 Ищем карточку в корне интеграции (не в lovelace/ внутри custom_components)
-    # HACS копирует файлы из корня репозитория в custom_components/novosti_mchs/
-    # но папка lovelace/ остаётся в корне репозитория, а не копируется
-    
-    # Пробуем найти карточку в нескольких местах
-    possible_paths = [
-        hass.config.path("custom_components/novosti_mchs/news-mchs-card.js"),  # если файл в корне
-        hass.config.path("custom_components/novosti_mchs/lovelace/news-mchs-card.js"),  # если папка скопировалась
-        hass.config.path("lovelace/news-mchs-card.js"),  # если в корне конфига
-    ]
-    
-    source_file = None
-    for path in possible_paths:
-        if os.path.exists(path):
-            source_file = path
-            _LOGGER.debug("   Карточка найдена: %s", path)
-            break
-    
-    if source_file is None:
-        _LOGGER.error("❌ Файл карточки не найден ни в одном из путей")
-        _LOGGER.error("   Проверенные пути: %s", possible_paths)
-        return
-
+    """Копирует файлы карточки в www/community/."""
+    # Карточка лежит в корне custom_components/novosti_mchs/
+    source_file = hass.config.path("custom_components/novosti_mchs/news-mchs-card.js")
     target_dir = hass.config.path("www/community/novosti_mchs/lovelace/")
     target_file = hass.config.path("www/community/novosti_mchs/lovelace/news-mchs-card.js")
 
@@ -77,9 +65,16 @@ def _copy_lovelace_files(hass):
     _LOGGER.debug("   Источник: %s", source_file)
     _LOGGER.debug("   Назначение: %s", target_file)
 
+    # Проверяем, существует ли файл
+    if not os.path.exists(source_file):
+        _LOGGER.error("❌ Файл карточки не найден: %s", source_file)
+        _LOGGER.error("   Поместите news-mchs-card.js в корень custom_components/novosti_mchs/")
+        return
+
     # Создаём целевую папку
     try:
         os.makedirs(target_dir, exist_ok=True)
+        _LOGGER.debug("   Папка создана: %s", target_dir)
     except Exception as e:
         _LOGGER.error("❌ Не удалось создать папку %s: %s", target_dir, e)
         return
@@ -105,3 +100,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.warning("⚠️ Проблема при выгрузке интеграции")
     
     return unload_ok
+
+
+async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Перезагрузка интеграции."""
+    _LOGGER.debug("🔄 Перезагрузка интеграции Новости МЧС")
+    await async_unload_entry(hass, entry)
+    await async_setup_entry(hass, entry)
