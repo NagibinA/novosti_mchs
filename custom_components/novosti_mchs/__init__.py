@@ -5,6 +5,7 @@ import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.const import Platform
+from homeassistant.components.lovelace.resources import ResourceStorageCollection
 
 from .const import DOMAIN
 
@@ -14,6 +15,7 @@ _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Настройка интеграции из конфигурации."""
+    # Сохраняем данные конфигурации
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = entry.data
 
@@ -31,7 +33,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     except Exception as e:
         _LOGGER.error("❌ Ошибка копирования карточки: %s", e)
 
-    # 3. Регистрируем карточку через ресурсы Lovelace
+    # 3. Регистрируем карточку как ресурс Lovelace
     await _register_lovelace_resource(hass)
 
     return True
@@ -39,38 +41,53 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 def _copy_lovelace_files(hass):
     """Копирует файлы карточки в www/community/."""
-    # Карточка лежит ВНУТРИ папки интеграции (скопирована HACS)
     source_file = hass.config.path("custom_components/novosti_mchs/news-mchs-card.js")
-    target_dir = hass.config.path("www/community/novosti_mchs/lovelace/")
-    target_file = hass.config.path("www/community/novosti_mchs/lovelace/news-mchs-card.js")
-
-    _LOGGER.debug("📁 Копирование карточки:")
-    _LOGGER.debug("   Источник: %s", source_file)
-    _LOGGER.debug("   Назначение: %s", target_file)
+    target_dir = hass.config.path("www/community/novosti_mchs/")
+    target_file = hass.config.path("www/community/novosti_mchs/news-mchs-card.js")
 
     if not os.path.exists(source_file):
         _LOGGER.error("❌ Файл карточки не найден: %s", source_file)
-        _LOGGER.error("   news-mchs-card.js должен лежать в custom_components/novosti_mchs/")
         return
 
-    # Создаём папку
     os.makedirs(target_dir, exist_ok=True)
-    
-    # Копируем
     shutil.copy2(source_file, target_file)
     _LOGGER.info("✅ Карточка скопирована: %s", target_file)
 
 
 async def _register_lovelace_resource(hass: HomeAssistant) -> None:
     """Регистрирует карточку в ресурсах Lovelace."""
-    card_url = "/local/community/novosti_mchs/lovelace/news-mchs-card.js"
+    card_url = "/local/community/novosti_mchs/news-mchs-card.js"
     
     try:
-        # Получаем объект ресурсов Lovelace
-        resources = hass.data.get("lovelace", {}).get("resources")
+        # Получаем объект Lovelace
+        lovelace_data = hass.data.get("lovelace")
+        if lovelace_data is None:
+            _LOGGER.warning("⚠️ Lovelace не загружен")
+            _LOGGER.warning(
+                "   Добавьте ресурс вручную:\n"
+                "   1. Настройки → Панели → Ресурсы → Добавить ресурс\n"
+                "   URL: %s\n"
+                "   Тип: JavaScript Module",
+                card_url
+            )
+            return
         
+        # Получаем ресурсы через атрибут
+        resources = getattr(lovelace_data, "resources", None)
         if resources is None:
-            _LOGGER.warning("⚠️ Объект ресурсов Lovelace не найден")
+            _LOGGER.warning("⚠️ Ресурсы Lovelace не найдены")
+            _LOGGER.warning(
+                "   Добавьте ресурс вручную:\n"
+                "   1. Настройки → Панели → Ресурсы → Добавить ресурс\n"
+                "   URL: %s\n"
+                "   Тип: JavaScript Module",
+                card_url
+            )
+            return
+        
+        # Проверяем тип ресурсов
+        if not isinstance(resources, ResourceStorageCollection):
+            _LOGGER.warning("⚠️ Неверный тип ресурсов: %s", type(resources))
             _LOGGER.warning(
                 "   Добавьте ресурс вручную:\n"
                 "   1. Настройки → Панели → Ресурсы → Добавить ресурс\n"
@@ -81,30 +98,17 @@ async def _register_lovelace_resource(hass: HomeAssistant) -> None:
             return
         
         # Проверяем, не зарегистрирован ли уже ресурс
-        existing_items = resources.async_items() if hasattr(resources, "async_items") else []
-        for resource in existing_items:
-            if resource.get("url") == card_url:
+        for item in resources.async_items():
+            if item.get("url") == card_url:
                 _LOGGER.info("✅ Карточка уже зарегистрирована в Lovelace")
                 return
         
         # Регистрируем новый ресурс
-        if hasattr(resources, "async_create_item"):
-            await resources.async_create_item(
-                {
-                    "res_type": "module",
-                    "url": card_url,
-                }
-            )
-            _LOGGER.info("✅ Карточка Новости МЧС зарегистрирована в Lovelace")
-        else:
-            _LOGGER.warning("⚠️ Не удалось зарегистрировать карточку")
-            _LOGGER.warning(
-                "   Добавьте ресурс вручную:\n"
-                "   1. Настройки → Панели → Ресурсы → Добавить ресурс\n"
-                "   URL: %s\n"
-                "   Тип: JavaScript Module",
-                card_url
-            )
+        await resources.async_create_item({
+            "res_type": "module",
+            "url": card_url,
+        })
+        _LOGGER.info("✅ Карточка Новости МЧС зарегистрирована в Lovelace")
                 
     except Exception as e:
         _LOGGER.error("❌ Ошибка регистрации карточки: %s", e)
@@ -119,12 +123,10 @@ async def _register_lovelace_resource(hass: HomeAssistant) -> None:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Выгрузка интеграции."""
-    _LOGGER.debug("🔄 Выгрузка интеграции Новости МЧС")
-    
-    unload_ok = await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    unload_ok = await hass.config_entries.async_forward_entry_unload(entry, "sensor")
     
     if unload_ok:
-        hass.data[DOMAIN].pop(entry.entry_id)
+        hass.data[DOMAIN].pop(entry.entry_id, None)
         _LOGGER.info("✅ Интеграция Новости МЧС выгружена")
     else:
         _LOGGER.warning("⚠️ Проблема при выгрузке интеграции")
