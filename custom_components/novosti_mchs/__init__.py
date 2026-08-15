@@ -1,3 +1,4 @@
+"""Интеграция Новости МЧС."""
 import os
 import shutil
 import logging
@@ -10,34 +11,36 @@ from .const import DOMAIN
 PLATFORMS = [Platform.SENSOR]
 _LOGGER = logging.getLogger(__name__)
 
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Настройка интеграции из конфигурации"""
+    """Настройка интеграции."""
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = entry.data
 
     # Настраиваем сенсоры
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    # Копируем карточку в www/community/ (как в Bianca)
+    # Копируем карточку
     await hass.async_add_executor_job(_copy_lovelace_files, hass)
 
-    # Регистрируем карточку как ресурс Lovelace
+    # Регистрируем карточку
     card_url = "/local/community/novosti_mchs/lovelace/news-mchs-card.js"
     try:
         await hass.services.async_call(
             "lovelace",
             "resources",
             {"url": card_url, "type": "module"},
-            blocking=True
+            blocking=True,
         )
         _LOGGER.info("Карточка Новости МЧС успешно зарегистрирована")
     except Exception as e:
-        _LOGGER.warning(f"Не удалось зарегистрировать карточку: {e}")
+        _LOGGER.warning("Не удалось зарегистрировать карточку: %s", e)
 
     return True
 
+
 def _copy_lovelace_files(hass):
-    """Копирует файлы карточки из интеграции в www/community."""
+    """Копирует файлы карточки в www/community."""
     source_dir = hass.config.path("custom_components/novosti_mchs/lovelace")
     target_dir = hass.config.path("www/community/novosti_mchs/lovelace")
 
@@ -48,7 +51,7 @@ def _copy_lovelace_files(hass):
     # Создаём целевую папку
     os.makedirs(target_dir, exist_ok=True)
 
-    # Копируем все файлы из lovelace/
+    # Копируем все файлы
     for filename in os.listdir(source_dir):
         source_file = os.path.join(source_dir, filename)
         target_file = os.path.join(target_dir, filename)
@@ -58,8 +61,9 @@ def _copy_lovelace_files(hass):
 
     _LOGGER.info("Карточка скопирована в /local/community/novosti_mchs/lovelace/")
 
+
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Выгрузка интеграции"""
+    """Выгрузка интеграции."""
     unload_ok = await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     if unload_ok:
         hass.data[DOMAIN].pop(entry.entry_id)
