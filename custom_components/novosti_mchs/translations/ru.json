@@ -26,11 +26,18 @@
     "step": {
       "init": {
         "title": "Настройки RSS Новости МЧС",
+        "description": "Измените URL RSS-ленты или интервал обновления",
         "data": {
           "rss_url": "URL RSS-ленты",
           "scan_interval": "Интервал обновления (сек)"
+        },
+        "description_placeholders": {
+          "example_url": "Пример: https://78.mchs.gov.ru/deyatelnost/press-centr/operativnaya-informaciya/rss"
         }
       }
+    },
+    "error": {
+      "invalid_url": "Неверный URL. Убедитесь, что он начинается с http:// или https://"
     }
   }
 }
