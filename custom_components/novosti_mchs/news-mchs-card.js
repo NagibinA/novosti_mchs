@@ -1,6 +1,6 @@
 // ============================================
 // Карточка "Новости МЧС" для Home Assistant
-// Версия: 1.1.0
+// Версия: 1.1.1
 // ============================================
 
 class NewsMCHSCard extends HTMLElement {
@@ -11,6 +11,7 @@ class NewsMCHSCard extends HTMLElement {
     this._hass = null;
     this._entities = [];
     this._imageCache = new Map();
+    this._lastArticlesHash = '';
   }
 
   static getConfigElement() {
@@ -26,8 +27,8 @@ class NewsMCHSCard extends HTMLElement {
       show_date: true,
       show_image: true,
       card_height: 400,
-      image_width: 120,
-      image_height: 80
+      image_width: 100,
+      image_height: 70
     };
   }
 
@@ -40,8 +41,8 @@ class NewsMCHSCard extends HTMLElement {
       show_date: config.show_date !== false,
       show_image: config.show_image !== false,
       show_source: config.show_source !== false,
-      image_width: config.image_width || 120,
-      image_height: config.image_height || 80,
+      image_width: config.image_width || 100,
+      image_height: config.image_height || 70,
       card_height: config.card_height || 400,
       clickable: config.clickable !== false,
       source_color: config.source_color || '#e63946',
@@ -60,12 +61,36 @@ class NewsMCHSCard extends HTMLElement {
     
     this._entities = [];
     for (const [entity_id, state] of Object.entries(this._hass.states)) {
-      if (entity_id.startsWith('sensor.novosti_mchs_') && state.attributes && state.attributes.articles) {
+      if (
+        (entity_id.startsWith('sensor.novosti_mchs_') || 
+         entity_id === 'sensor.novosti_mchs' ||
+         entity_id.includes('novosti_mchs')) && 
+        state.attributes && 
+        state.attributes.articles
+      ) {
         this._entities.push({
           entity_id: entity_id,
           name: state.attributes.friendly_name || entity_id,
           articles: state.attributes.articles
         });
+      }
+    }
+    
+    if (this._entities.length === 0) {
+      for (const [entity_id, state] of Object.entries(this._hass.states)) {
+        if (
+          state.attributes && 
+          state.attributes.articles &&
+          (state.attributes.source_name === "Сводка ЧС и происшествий" ||
+           state.attributes.filter === "только сводка ЧС и происшествий")
+        ) {
+          this._entities.push({
+            entity_id: entity_id,
+            name: state.attributes.friendly_name || entity_id,
+            articles: state.attributes.articles
+          });
+          break;
+        }
       }
     }
   }
@@ -128,33 +153,29 @@ class NewsMCHSCard extends HTMLElement {
     }
     
     let resizedUrl = url;
+    const w = this._config.image_width;
+    const h = this._config.image_height;
     
     try {
       const urlObj = new URL(url);
       const hostname = urlObj.hostname;
       
-      if (hostname.includes('yandex') || hostname.includes('yandex.ru')) {
-        urlObj.searchParams.set('w', this._config.image_width);
-        urlObj.searchParams.set('h', this._config.image_height);
+      if (hostname.includes('yandex')) {
+        urlObj.searchParams.set('w', w);
+        urlObj.searchParams.set('h', h);
         urlObj.searchParams.set('crop', 'fill');
         resizedUrl = urlObj.toString();
       }
-      else if (hostname.includes('mchs.gov.ru') || hostname.includes('mchs') && hostname.includes('.ru')) {
-        if (url.includes('?')) {
-          resizedUrl = url + `&w=${this._config.image_width}&h=${this._config.image_height}`;
-        } else {
-          resizedUrl = url + `?w=${this._config.image_width}&h=${this._config.image_height}`;
-        }
+      else if (hostname.includes('mchs')) {
+        const separator = url.includes('?') ? '&' : '?';
+        resizedUrl = url + `${separator}w=${w}&h=${h}`;
       }
-      else if (hostname.includes('vk.com') || hostname.includes('vk')) {
-        resizedUrl = url.replace(/\?.*$/, '') + `?w=${this._config.image_width}&h=${this._config.image_height}`;
+      else if (hostname.includes('vk')) {
+        resizedUrl = url.replace(/\?.*$/, '') + `?w=${w}&h=${h}`;
       }
       else {
-        if (url.includes('?')) {
-          resizedUrl = url + `&width=${this._config.image_width}&height=${this._config.image_height}`;
-        } else {
-          resizedUrl = url + `?width=${this._config.image_width}&height=${this._config.image_height}`;
-        }
+        const separator = url.includes('?') ? '&' : '?';
+        resizedUrl = url + `${separator}width=${w}&height=${h}`;
       }
     } catch (e) {
       resizedUrl = url;
@@ -162,6 +183,15 @@ class NewsMCHSCard extends HTMLElement {
     
     this._imageCache.set(url, resizedUrl);
     return resizedUrl;
+  }
+
+  _hasDataChanged(articles) {
+    const hash = JSON.stringify(articles.map(a => a.title + a.pubDate));
+    if (hash === this._lastArticlesHash) {
+      return false;
+    }
+    this._lastArticlesHash = hash;
+    return true;
   }
 
   _render() {
@@ -188,6 +218,7 @@ class NewsMCHSCard extends HTMLElement {
           .error {
             color: var(--error-color, #e53935);
             padding: 20px;
+            font-size: 16px;
           }
           .hint {
             color: var(--secondary-text-color, #666);
@@ -204,6 +235,13 @@ class NewsMCHSCard extends HTMLElement {
     }
 
     const articles = this._getArticles();
+    
+    if (!this._hasDataChanged(articles) && this._lastRenderHtml) {
+      return;
+    }
+
+    const imgWidth = this._config.image_width;
+    const imgHeight = this._config.image_height;
 
     let html = `
       <style>
@@ -262,6 +300,7 @@ class NewsMCHSCard extends HTMLElement {
           transition: background 0.15s;
           border-radius: 8px;
           text-decoration: none;
+          min-height: ${imgHeight + 10}px;
         }
         .article:hover {
           background: var(--hover-color, rgba(0,0,0,0.04));
@@ -269,16 +308,19 @@ class NewsMCHSCard extends HTMLElement {
         .article-content {
           flex: 1;
           min-width: 0;
+          display: flex;
+          flex-direction: column;
+          justify-content: flex-start;
         }
         .article-title {
           font-weight: 500;
           color: var(--primary-text-color, #333);
           margin-bottom: 4px;
-          font-size: 15px;
+          font-size: 14px;
           line-height: 1.3;
         }
         .article-description {
-          font-size: 13px;
+          font-size: 12px;
           color: var(--secondary-text-color, #666);
           line-height: 1.4;
           display: ${this._config.show_description ? 'block' : 'none'};
@@ -286,9 +328,9 @@ class NewsMCHSCard extends HTMLElement {
         }
         .article-meta {
           display: flex;
-          gap: 12px;
+          gap: 8px;
           margin-top: 4px;
-          font-size: 12px;
+          font-size: 11px;
           color: var(--secondary-text-color, #999);
           flex-wrap: wrap;
           align-items: center;
@@ -298,14 +340,18 @@ class NewsMCHSCard extends HTMLElement {
           color: white;
           padding: 0 8px;
           border-radius: 4px;
-          font-size: 11px;
-          line-height: 20px;
+          font-size: 10px;
+          line-height: 18px;
           display: ${this._config.show_source ? 'inline-block' : 'none'};
         }
         .article-image-wrapper {
           flex-shrink: 0;
-          width: ${this._config.image_width}px;
-          height: ${this._config.image_height}px;
+          width: ${imgWidth}px;
+          min-width: ${imgWidth}px;
+          max-width: ${imgWidth}px;
+          height: ${imgHeight}px;
+          min-height: ${imgHeight}px;
+          max-height: ${imgHeight}px;
           border-radius: 6px;
           overflow: hidden;
           background: var(--divider-color, #e0e0e0);
@@ -313,10 +359,14 @@ class NewsMCHSCard extends HTMLElement {
           position: relative;
         }
         .article-image-wrapper img {
-          width: 100%;
-          height: 100%;
-          object-fit: cover;
-          display: block;
+          width: 100% !important;
+          height: 100% !important;
+          min-width: ${imgWidth}px !important;
+          max-width: ${imgWidth}px !important;
+          min-height: ${imgHeight}px !important;
+          max-height: ${imgHeight}px !important;
+          object-fit: cover !important;
+          display: block !important;
         }
         .empty {
           color: var(--secondary-text-color, #666);
@@ -341,7 +391,7 @@ class NewsMCHSCard extends HTMLElement {
         return dateB - dateA;
       });
 
-      sortedArticles.slice(0, this._config.max_articles).forEach(article => {
+      sortedArticles.slice(0, this._config.max_articles).forEach((article, index) => {
         const resizedImageUrl = this._getResizedImageUrl(article.image);
         
         const imageHtml = resizedImageUrl && this._config.show_image
@@ -350,8 +400,8 @@ class NewsMCHSCard extends HTMLElement {
                  src="${resizedImageUrl}" 
                  alt=""
                  loading="lazy"
-                 onload="this.parentElement.style.background='transparent'"
                  onerror="this.parentElement.style.display='none'"
+                 style="width:${imgWidth}px;height:${imgHeight}px;object-fit:cover;"
                >
              </div>`
           : '';
@@ -387,6 +437,7 @@ class NewsMCHSCard extends HTMLElement {
 
     html += `</div></div>`;
     this.shadowRoot.innerHTML = html;
+    this._lastRenderHtml = html;
   }
 
   getCardSize() {
