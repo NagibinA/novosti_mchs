@@ -24,7 +24,7 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     CONF_RSS_URL,
     CONF_SOURCES_COUNT,
-    CONF_SCAN_INTERVAL,  # ← ДОБАВЛЕН ИМПОРТ
+    CONF_SCAN_INTERVAL,
     ATTR_ARTICLES,
 )
 
@@ -305,8 +305,7 @@ class RSSNewsSensor(CoordinatorEntity[RSSDataUpdateCoordinator], SensorEntity):
             ATTR_ARTICLES: articles[:10],
             "source_name": self._attr_name,
             "count": len(articles),
-            "last_update": self.coordinator.last_update_success_time.isoformat()
-            if self.coordinator.last_update_success_time else None,
+            "last_update": self.coordinator.last_update_success,
             "error": self.coordinator.last_error,
         }
 
