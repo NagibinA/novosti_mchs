@@ -23,7 +23,6 @@ from .const import (
     DOMAIN,
     DEFAULT_SCAN_INTERVAL,
     CONF_RSS_URL,
-    CONF_SOURCES_COUNT,
     CONF_SCAN_INTERVAL,
     ATTR_ARTICLES,
 )
@@ -40,12 +39,10 @@ async def async_setup_entry(
     _LOGGER.debug("🔄 Настройка сенсоров Новости МЧС")
     
     rss_url = config_entry.data.get(CONF_RSS_URL)
-    sources_count = config_entry.data.get(CONF_SOURCES_COUNT, 1)
     base_name = config_entry.data.get(CONF_NAME, "Новости МЧС")
-    scan_interval = config_entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+    scan_interval = config_entry.options.get(CONF_SCAN_INTERVAL, config_entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL))
 
     _LOGGER.debug("   URL: %s", rss_url)
-    _LOGGER.debug("   Количество сенсоров: %d", sources_count)
     _LOGGER.debug("   Интервал обновления: %d сек", scan_interval)
 
     # Создаём координатор
@@ -58,19 +55,15 @@ async def async_setup_entry(
     # Выполняем первый запрос
     await coordinator.async_refresh()
 
-    # Создаём сенсоры
-    entities: List[SensorEntity] = []
-    for i in range(sources_count):
-        entities.append(
-            RSSNewsSensor(
-                coordinator,
-                base_name,
-                i + 1,
-                sources_count,
-            )
+    # Создаём ОДИН сенсор с фильтрацией
+    entities = [
+        RSSNewsSensor(
+            coordinator,
+            base_name,
         )
+    ]
 
-    _LOGGER.info("✅ Создано %d сенсоров Новости МЧС", len(entities))
+    _LOGGER.info("✅ Создан 1 сенсор Новости МЧС (только сводка ЧС)")
     async_add_entities(entities)
 
 
@@ -120,9 +113,13 @@ class RSSDataUpdateCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                 self._parse_rss, xml_text
             )
             
-            _LOGGER.debug("✅ Загружено %d новостей", len(articles))
+            # ФИЛЬТРУЕМ: оставляем только новости со сводкой ЧС
+            filtered_articles = self._filter_emergency_news(articles)
+            
+            _LOGGER.debug("✅ Загружено %d новостей, отфильтровано %d (сводка ЧС)", 
+                         len(articles), len(filtered_articles))
             self._last_error = None
-            return {"articles": articles}
+            return {"articles": filtered_articles}
 
         except aiohttp.ClientError as e:
             _LOGGER.error("❌ Ошибка подключения: %s", e)
@@ -139,6 +136,52 @@ class RSSDataUpdateCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             self._last_error = str(e)
             raise UpdateFailed(f"Неизвестная ошибка: {e}") from e
 
+    def _filter_emergency_news(self, articles: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        """Фильтрует новости, оставляя только сводку ЧС и происшествий."""
+        if not articles:
+            return []
+        
+        # Ключевые слова для фильтрации
+        keywords = [
+            "сводка",
+            "происшествие",
+            "чс",
+            "чрезвычайная",
+            "пожар",
+            "спасение",
+            "пострадал",
+            "эвакуация",
+            "авария",
+            "обрушение",
+            "затопление",
+            "взрыв",
+            "дтп",
+            "авиакатастрофа",
+            "землетрясение",
+            "наводнение",
+            "ураган",
+            "шторм",
+        ]
+        
+        filtered = []
+        for article in articles:
+            title = (article.get("title", "") or "").lower()
+            description = (article.get("description", "") or "").lower()
+            text = title + " " + description
+            
+            # Проверяем наличие ключевых слов
+            for keyword in keywords:
+                if keyword in text:
+                    filtered.append(article)
+                    break
+        
+        # Если ничего не найдено, показываем первые 3 новости (на всякий случай)
+        if not filtered:
+            _LOGGER.debug("⚠️ Новостей со сводкой ЧС не найдено, показываем первые 3")
+            return articles[:3]
+        
+        return filtered
+
     def _parse_rss(self, xml_text: str) -> List[Dict[str, str]]:
         """Парсинг RSS ленты."""
         articles: List[Dict[str, str]] = []
@@ -150,7 +193,7 @@ class RSSDataUpdateCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             items = root.findall(".//item")
             _LOGGER.debug("   Найдено элементов <item>: %d", len(items))
             
-            for idx, item in enumerate(items[:10]):
+            for idx, item in enumerate(items[:20]):  # Берём больше, чтобы было из чего фильтровать
                 try:
                     # Извлекаем данные с проверкой на None
                     title_elem = item.find("title")
@@ -201,9 +244,9 @@ class RSSDataUpdateCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         clean = re.sub(r"<[^>]+>", "", description)
         # Удаляем лишние пробелы
         clean = re.sub(r"\s+", " ", clean).strip()
-        # Обрезаем до 250 символов
-        if len(clean) > 250:
-            clean = clean[:250] + "..."
+        # Обрезаем до 500 символов
+        if len(clean) > 500:
+            clean = clean[:500] + "..."
         return clean
 
     def _extract_image(self, item: ET.Element) -> Optional[str]:
@@ -253,30 +296,21 @@ class RSSDataUpdateCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
 
 
 class RSSNewsSensor(CoordinatorEntity[RSSDataUpdateCoordinator], SensorEntity):
-    """Сенсор с новостями."""
+    """Сенсор с новостями (только сводка ЧС)."""
 
     def __init__(
         self,
         coordinator: RSSDataUpdateCoordinator,
         base_name: str,
-        source_number: int,
-        total_sources: int,
     ) -> None:
         """Инициализация сенсора."""
         super().__init__(coordinator)
         
-        self._source_number = source_number
-        self._total_sources = total_sources
         self._base_name = base_name
         
-        # Формируем имя
-        if total_sources > 1:
-            self._attr_name = f"{base_name} {source_number}"
-        else:
-            self._attr_name = base_name
-        
-        self._attr_unique_id = f"{DOMAIN}_{source_number}"
-        self._attr_icon = "mdi:rss"
+        self._attr_name = "Сводка ЧС и происшествий"
+        self._attr_unique_id = f"{DOMAIN}_emergency"
+        self._attr_icon = "mdi:alert-circle"
         self._attr_native_unit_of_measurement = "нов."
 
     @property
@@ -302,11 +336,12 @@ class RSSNewsSensor(CoordinatorEntity[RSSDataUpdateCoordinator], SensorEntity):
         articles = self.coordinator.data.get(ATTR_ARTICLES, [])
         
         return {
-            ATTR_ARTICLES: articles[:10],
+            ATTR_ARTICLES: articles,
             "source_name": self._attr_name,
             "count": len(articles),
             "last_update": self.coordinator.last_update_success,
             "error": self.coordinator.last_error,
+            "filter": "только сводка ЧС и происшествий",
         }
 
     @property
@@ -321,6 +356,6 @@ class RSSNewsSensor(CoordinatorEntity[RSSDataUpdateCoordinator], SensorEntity):
             "identifiers": {(DOMAIN, self._attr_unique_id)},
             "name": self._attr_name,
             "manufacturer": "МЧС России",
-            "model": "RSS Новости",
-            "sw_version": "1.0.2",
+            "model": "RSS Сводка ЧС",
+            "sw_version": "1.1.0",
         }
