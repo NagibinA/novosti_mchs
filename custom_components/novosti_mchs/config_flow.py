@@ -58,7 +58,9 @@ class NovostiMCHSOptionsFlow(config_entries.OptionsFlow):
     """Поток опций для интеграции Новости МЧС."""
 
     def __init__(self, config_entry):
-        self.config_entry = config_entry
+        """Инициализация потока опций."""
+        super().__init__()
+        self._config_entry = config_entry
 
     async def async_step_init(self, user_input=None):
         """Шаг настройки опций."""
@@ -70,23 +72,23 @@ class NovostiMCHSOptionsFlow(config_entries.OptionsFlow):
                 errors["base"] = "invalid_url"
             else:
                 # Обновляем данные
-                new_data = {**self.config_entry.data}
+                new_data = {**self._config_entry.data}
                 new_data[CONF_RSS_URL] = user_input[CONF_RSS_URL]
                 new_data[CONF_SCAN_INTERVAL] = user_input[CONF_SCAN_INTERVAL]
                 
                 self.hass.config_entries.async_update_entry(
-                    self.config_entry,
+                    self._config_entry,
                     data=new_data
                 )
                 
                 # Перезагружаем интеграцию
-                await self.hass.config_entries.async_reload(self.config_entry.entry_id)
+                await self.hass.config_entries.async_reload(self._config_entry.entry_id)
                 
                 return self.async_create_entry(title="", data={})
 
         # Получаем текущие значения
-        current_rss = self.config_entry.data.get(CONF_RSS_URL, "")
-        current_interval = self.config_entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+        current_rss = self._config_entry.data.get(CONF_RSS_URL, "")
+        current_interval = self._config_entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
 
         return self.async_show_form(
             step_id="init",

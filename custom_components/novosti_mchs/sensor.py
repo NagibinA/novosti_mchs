@@ -55,7 +55,7 @@ async def async_setup_entry(
     # Выполняем первый запрос
     await coordinator.async_refresh()
 
-    # Создаём ОДИН сенсор с фильтрацией
+    # Создаём ОДИН сенсор
     entities = [
         RSSNewsSensor(
             coordinator,
@@ -63,7 +63,7 @@ async def async_setup_entry(
         )
     ]
 
-    _LOGGER.info("✅ Создан 1 сенсор Новости МЧС (только сводка ЧС)")
+    _LOGGER.info("✅ Создан 1 сенсор Новости МЧС")
     async_add_entities(entities)
 
 
@@ -85,6 +85,75 @@ class RSSDataUpdateCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         )
         self.rss_url = rss_url
         self._last_error: Optional[str] = None
+        self.session: Optional[aiohttp.ClientSession] = None
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        """Получает сессию aiohttp."""
+        if self.session is None or self.session.closed:
+            self.session = aiohttp.ClientSession()
+        return self.session
+
+    async def _fetch_full_article(self, url: str) -> str:
+        """Загружает полный текст статьи по ссылке."""
+        try:
+            session = await self._get_session()
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            }
+            
+            async with async_timeout.timeout(15):
+                async with session.get(url, headers=headers) as response:
+                    if response.status != 200:
+                        return ""
+                    
+                    html = await response.text()
+                    
+                    # Пытаемся извлечь текст из различных селекторов
+                    # Используем простой поиск по ключевым словам и блокам
+                    
+                    # Ищем блок с текстом новости на сайте МЧС
+                    patterns = [
+                        r'<div[^>]*class="[^"]*text[^"]*"[^>]*>(.*?)</div>',
+                        r'<div[^>]*class="[^"]*content[^"]*"[^>]*>(.*?)</div>',
+                        r'<div[^>]*class="[^"]*news[^"]*"[^>]*>(.*?)</div>',
+                        r'<div[^>]*class="[^"]*article[^"]*"[^>]*>(.*?)</div>',
+                        r'<div[^>]*class="[^"]*body[^"]*"[^>]*>(.*?)</div>',
+                        r'<p>(.*?)</p>',  # Если ничего не нашли - берём все абзацы
+                    ]
+                    
+                    full_text = ""
+                    for pattern in patterns:
+                        matches = re.findall(pattern, html, re.DOTALL | re.IGNORECASE)
+                        if matches:
+                            # Берём первый найденный блок
+                            text = matches[0]
+                            # Очищаем от HTML
+                            text = re.sub(r'<[^>]+>', ' ', text)
+                            text = re.sub(r'\s+', ' ', text).strip()
+                            # Если текст достаточно длинный - используем его
+                            if len(text) > 100:
+                                full_text = text
+                                break
+                    
+                    # Если текст не найден, пробуем найти все параграфы
+                    if not full_text or len(full_text) < 50:
+                        # Ищем все теги <p> с текстом
+                        paragraphs = re.findall(r'<p>(.*?)</p>', html, re.DOTALL | re.IGNORECASE)
+                        if paragraphs:
+                            # Собираем все абзацы в один текст
+                            full_text = ' '.join([
+                                re.sub(r'<[^>]+>', ' ', p).strip()
+                                for p in paragraphs
+                                if len(p.strip()) > 20
+                            ])
+                            if full_text:
+                                full_text = re.sub(r'\s+', ' ', full_text).strip()
+                    
+                    return full_text if full_text and len(full_text) > 20 else ""
+                    
+        except Exception as e:
+            _LOGGER.debug("Ошибка загрузки статьи %s: %s", url, e)
+            return ""
 
     async def _async_update_data(self) -> Dict[str, Any]:
         """Загрузка данных из RSS."""
@@ -108,18 +177,45 @@ class RSSDataUpdateCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                         xml_text = await response.text()
                         _LOGGER.debug("   Загружено %d байт", len(xml_text))
 
-            # Парсим XML в отдельном потоке
+            # Парсим XML
             articles = await self.hass.async_add_executor_job(
                 self._parse_rss, xml_text
             )
             
-            # ФИЛЬТРУЕМ: оставляем только новости со сводкой ЧС
-            filtered_articles = self._filter_emergency_news(articles)
+            # Загружаем полный текст для каждой статьи
+            _LOGGER.debug("   Загрузка полного текста для %d статей", len(articles))
             
-            _LOGGER.debug("✅ Загружено %d новостей, отфильтровано %d (сводка ЧС)", 
-                         len(articles), len(filtered_articles))
+            full_articles = []
+            for i, article in enumerate(articles[:5]):  # Ограничиваем 5 статьями для скорости
+                if article.get("link") and article["link"] != "#":
+                    try:
+                        # Проверяем, есть ли уже достаточно текста
+                        desc = article.get("description", "")
+                        if len(desc) > 200:
+                            # Если описание уже длинное - используем его
+                            article["full_text"] = desc
+                            full_articles.append(article)
+                            continue
+                        
+                        full_text = await self._fetch_full_article(article["link"])
+                        if full_text:
+                            article["full_text"] = full_text
+                            _LOGGER.debug("   ✅ Загружен текст для: %s", article["title"][:50])
+                        else:
+                            # Если не удалось загрузить, используем описание из RSS
+                            article["full_text"] = desc or "Описание отсутствует"
+                            _LOGGER.debug("   ⚠️ Используем описание из RSS: %s", article["title"][:50])
+                    except Exception as e:
+                        _LOGGER.debug("   ❌ Ошибка загрузки: %s", e)
+                        article["full_text"] = article.get("description", "Описание отсутствует")
+                else:
+                    article["full_text"] = article.get("description", "Описание отсутствует")
+                
+                full_articles.append(article)
+            
+            _LOGGER.debug("✅ Загружено %d новостей", len(full_articles))
             self._last_error = None
-            return {"articles": filtered_articles}
+            return {"articles": full_articles}
 
         except aiohttp.ClientError as e:
             _LOGGER.error("❌ Ошибка подключения: %s", e)
@@ -136,64 +232,16 @@ class RSSDataUpdateCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             self._last_error = str(e)
             raise UpdateFailed(f"Неизвестная ошибка: {e}") from e
 
-    def _filter_emergency_news(self, articles: List[Dict[str, str]]) -> List[Dict[str, str]]:
-        """Фильтрует новости, оставляя только сводку ЧС и происшествий."""
-        if not articles:
-            return []
-        
-        # Ключевые слова для фильтрации
-        keywords = [
-            "сводка",
-            "происшествие",
-            "чс",
-            "чрезвычайная",
-            "пожар",
-            "спасение",
-            "пострадал",
-            "эвакуация",
-            "авария",
-            "обрушение",
-            "затопление",
-            "взрыв",
-            "дтп",
-            "авиакатастрофа",
-            "землетрясение",
-            "наводнение",
-            "ураган",
-            "шторм",
-        ]
-        
-        filtered = []
-        for article in articles:
-            title = (article.get("title", "") or "").lower()
-            description = (article.get("description", "") or "").lower()
-            text = title + " " + description
-            
-            # Проверяем наличие ключевых слов
-            for keyword in keywords:
-                if keyword in text:
-                    filtered.append(article)
-                    break
-        
-        # Если ничего не найдено, показываем первые 3 новости
-        if not filtered:
-            _LOGGER.debug("⚠️ Новостей со сводкой ЧС не найдено, показываем первые 3")
-            return articles[:3]
-        
-        return filtered
-
     def _parse_rss(self, xml_text: str) -> List[Dict[str, str]]:
         """Парсинг RSS ленты."""
         articles: List[Dict[str, str]] = []
         
         try:
             root = ET.fromstring(xml_text)
-            
-            # Находим все элементы <item>
             items = root.findall(".//item")
             _LOGGER.debug("   Найдено элементов <item>: %d", len(items))
             
-            for idx, item in enumerate(items[:20]):
+            for idx, item in enumerate(items[:10]):
                 try:
                     title_elem = item.find("title")
                     link_elem = item.find("link")
@@ -201,10 +249,11 @@ class RSSDataUpdateCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                     pub_date_elem = item.find("pubDate")
                     
                     title = title_elem.text if title_elem is not None and title_elem.text else "Без названия"
-                    link = link_elem.text if link_elem is not None and link_elem.text else ""
+                    link = link_elem.text if link_elem is not None and link_elem.text else "#"
                     description = description_elem.text if description_elem is not None else ""
                     pub_date = pub_date_elem.text if pub_date_elem is not None and pub_date_elem.text else ""
                     
+                    # Очищаем описание
                     description_clean = self._clean_description(description)
                     image = self._extract_image(item)
                     
@@ -214,6 +263,7 @@ class RSSDataUpdateCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                         "description": description_clean,
                         "pubDate": pub_date,
                         "image": image,
+                        "full_text": description_clean,  # По умолчанию - описание
                     }
                     articles.append(article)
                     
@@ -238,8 +288,6 @@ class RSSDataUpdateCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         
         clean = re.sub(r"<[^>]+>", "", description)
         clean = re.sub(r"\s+", " ", clean).strip()
-        if len(clean) > 500:
-            clean = clean[:500] + "..."
         return clean
 
     def _extract_image(self, item: ET.Element) -> Optional[str]:
@@ -254,12 +302,6 @@ class RSSDataUpdateCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             media = item.find("media:content")
             if media is not None:
                 url = media.get("url")
-                if url:
-                    return url
-            
-            thumbnail = item.find("media:thumbnail")
-            if thumbnail is not None:
-                url = thumbnail.get("url")
                 if url:
                     return url
             
@@ -285,7 +327,7 @@ class RSSDataUpdateCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
 
 
 class RSSNewsSensor(CoordinatorEntity[RSSDataUpdateCoordinator], SensorEntity):
-    """Сенсор с новостями (только сводка ЧС)."""
+    """Сенсор с новостями."""
 
     def __init__(
         self,
@@ -324,13 +366,23 @@ class RSSNewsSensor(CoordinatorEntity[RSSDataUpdateCoordinator], SensorEntity):
         
         articles = self.coordinator.data.get(ATTR_ARTICLES, [])
         
+        # Добавляем полный текст в каждую статью
+        full_articles = []
+        for article in articles:
+            full_article = dict(article)
+            # Если есть full_text - используем его, иначе description
+            if "full_text" in full_article and full_article["full_text"]:
+                full_article["text"] = full_article["full_text"]
+            else:
+                full_article["text"] = full_article.get("description", "Описание отсутствует")
+            full_articles.append(full_article)
+        
         return {
-            ATTR_ARTICLES: articles,
-            "source_name": "Сводка ЧС и происшествий",
-            "count": len(articles),
+            ATTR_ARTICLES: full_articles,
+            "source_name": self._attr_name,
+            "count": len(full_articles),
             "last_update": self.coordinator.last_update_success,
             "error": self.coordinator.last_error,
-            "filter": "только сводка ЧС и происшествий",
         }
 
     @property
@@ -345,6 +397,6 @@ class RSSNewsSensor(CoordinatorEntity[RSSDataUpdateCoordinator], SensorEntity):
             "identifiers": {(DOMAIN, self._attr_unique_id)},
             "name": self._attr_name,
             "manufacturer": "МЧС России",
-            "model": "RSS Сводка ЧС",
-            "sw_version": "1.1.1",
+            "model": "RSS Новости",
+            "sw_version": "1.1.0",
         }

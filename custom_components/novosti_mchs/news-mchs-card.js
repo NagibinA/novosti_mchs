@@ -1,6 +1,7 @@
 // ============================================
 // Карточка "Новости МЧС" для Home Assistant
-// Версия: 1.1.1
+// Версия: 1.4.6
+// Двухпанельный режим - С ПОЛНЫМ ТЕКСТОМ НОВОСТИ
 // ============================================
 
 class NewsMCHSCard extends HTMLElement {
@@ -11,7 +12,12 @@ class NewsMCHSCard extends HTMLElement {
     this._hass = null;
     this._entities = [];
     this._imageCache = new Map();
-    this._lastArticlesHash = '';
+    this._selectedIndex = 0;
+    this._articles = [];
+    this._lastRenderHash = '';
+    this._isRendering = false;
+    this._scrollPosition = 0;
+    this._listScrollPosition = 0;
   }
 
   static getConfigElement() {
@@ -22,13 +28,13 @@ class NewsMCHSCard extends HTMLElement {
     return {
       entity: "",
       title: "📰 Сводка ЧС",
-      max_articles: 15,
-      show_description: true,
+      max_articles: 10,
       show_date: true,
       show_image: true,
-      card_height: 400,
-      image_width: 100,
-      image_height: 70
+      card_height: 500,
+      image_width: 80,
+      image_height: 60,
+      source_color: '#e63946'
     };
   }
 
@@ -36,17 +42,18 @@ class NewsMCHSCard extends HTMLElement {
     this._config = {
       entity: config.entity || "",
       title: config.title || '📰 Сводка ЧС',
-      max_articles: config.max_articles || 15,
-      show_description: config.show_description !== false,
+      max_articles: config.max_articles || 10,
       show_date: config.show_date !== false,
       show_image: config.show_image !== false,
       show_source: config.show_source !== false,
-      image_width: config.image_width || 100,
-      image_height: config.image_height || 70,
-      card_height: config.card_height || 400,
-      clickable: config.clickable !== false,
+      image_width: config.image_width || 80,
+      image_height: config.image_height || 60,
+      card_height: config.card_height || 500,
       source_color: config.source_color || '#e63946',
     };
+    this._selectedIndex = 0;
+    this._scrollPosition = 0;
+    this._listScrollPosition = 0;
     this._render();
   }
 
@@ -145,313 +152,380 @@ class NewsMCHSCard extends HTMLElement {
     return div.innerHTML;
   }
 
+  // === ОСНОВНАЯ ФУНКЦИЯ: ПОЛУЧЕНИЕ ТЕКСТА НОВОСТИ ===
+  _getFullText(article) {
+    if (!article) return 'Описание отсутствует';
+    
+    // Приоритет: full_text > text > description
+    if (article.full_text && article.full_text.length > 10) {
+      return this._cleanText(article.full_text);
+    }
+    if (article.text && article.text.length > 10) {
+      return this._cleanText(article.text);
+    }
+    if (article.description && article.description.length > 10) {
+      return this._cleanText(article.description);
+    }
+    return 'Полный текст новости отсутствует';
+  }
+
+  _cleanText(html) {
+    if (!html) return 'Описание отсутствует';
+    
+    // Если текст уже очищен (не содержит HTML)
+    if (!html.includes('<') && !html.includes('>')) {
+      return html.trim() || 'Описание отсутствует';
+    }
+    
+    let text = html
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n\n')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    
+    return text || 'Описание отсутствует';
+  }
+
   _getResizedImageUrl(url) {
     if (!url) return null;
-    
     if (this._imageCache.has(url)) {
       return this._imageCache.get(url);
     }
-    
-    let resizedUrl = url;
-    const w = this._config.image_width;
-    const h = this._config.image_height;
-    
-    try {
-      const urlObj = new URL(url);
-      const hostname = urlObj.hostname;
-      
-      if (hostname.includes('yandex')) {
-        urlObj.searchParams.set('w', w);
-        urlObj.searchParams.set('h', h);
-        urlObj.searchParams.set('crop', 'fill');
-        resizedUrl = urlObj.toString();
-      }
-      else if (hostname.includes('mchs')) {
-        const separator = url.includes('?') ? '&' : '?';
-        resizedUrl = url + `${separator}w=${w}&h=${h}`;
-      }
-      else if (hostname.includes('vk')) {
-        resizedUrl = url.replace(/\?.*$/, '') + `?w=${w}&h=${h}`;
-      }
-      else {
-        const separator = url.includes('?') ? '&' : '?';
-        resizedUrl = url + `${separator}width=${w}&height=${h}`;
-      }
-    } catch (e) {
-      resizedUrl = url;
-    }
-    
-    this._imageCache.set(url, resizedUrl);
-    return resizedUrl;
+    this._imageCache.set(url, url);
+    return url;
   }
 
-  _hasDataChanged(articles) {
-    const hash = JSON.stringify(articles.map(a => a.title + a.pubDate));
-    if (hash === this._lastArticlesHash) {
+  _hasDataChanged(articles, selectedIndex) {
+    const hash = JSON.stringify({
+      titles: articles.map(a => a.title + a.pubDate),
+      selected: selectedIndex
+    });
+    if (hash === this._lastRenderHash) {
       return false;
     }
-    this._lastArticlesHash = hash;
+    this._lastRenderHash = hash;
     return true;
   }
 
+  _saveScrollPosition() {
+    const listPanel = this.shadowRoot?.querySelector('.list-panel');
+    if (listPanel) {
+      this._listScrollPosition = listPanel.scrollTop;
+    }
+  }
+
+  _restoreScrollPosition() {
+    const listPanel = this.shadowRoot?.querySelector('.list-panel');
+    if (listPanel && this._listScrollPosition > 0) {
+      setTimeout(() => {
+        listPanel.scrollTop = this._listScrollPosition;
+      }, 50);
+    }
+  }
+
   _render() {
+    if (this._isRendering) return;
+    
+    this._saveScrollPosition();
+    
     if (!this._hass) {
-      this.shadowRoot.innerHTML = `
-        <div style="padding: 16px; text-align: center; color: var(--secondary-text-color, #666);">
-          Загрузка...
-        </div>
-      `;
+      this.shadowRoot.innerHTML = `<div style="padding:16px;">Загрузка...</div>`;
       return;
     }
 
     if (this._entities.length === 0 && !this._config.entity) {
       this.shadowRoot.innerHTML = `
-        <style>
-          .card {
-            background: var(--ha-card-background, var(--card-background-color, white));
-            border-radius: var(--ha-card-border-radius, 12px);
-            padding: 16px;
-            box-shadow: var(--ha-card-box-shadow, 0 2px 4px rgba(0,0,0,0.1));
-            font-family: var(--paper-font-common-base, -apple-system, BlinkMacSystemFont, sans-serif);
-            text-align: center;
-          }
-          .error {
-            color: var(--error-color, #e53935);
-            padding: 20px;
-            font-size: 16px;
-          }
-          .hint {
-            color: var(--secondary-text-color, #666);
-            font-size: 14px;
-            margin-top: 8px;
-          }
-        </style>
-        <div class="card">
-          <div class="error">⚠️ Сенсоры Новости МЧС не найдены</div>
-          <div class="hint">Добавьте интеграцию "Новости МЧС" в Настройках</div>
+        <div style="padding:16px;text-align:center;color:var(--secondary-text-color,#666);">
+          ⚠️ Сенсоры Новости МЧС не найдены
         </div>
       `;
       return;
     }
 
     const articles = this._getArticles();
-    
-    if (!this._hasDataChanged(articles) && this._lastRenderHtml) {
+    const sorted = [...articles].sort((a, b) => {
+      const dateA = new Date(a.pubDate || a.updated || 0);
+      const dateB = new Date(b.pubDate || b.updated || 0);
+      return dateB - dateA;
+    }).slice(0, this._config.max_articles);
+
+    if (this._selectedIndex >= sorted.length) {
+      this._selectedIndex = 0;
+    }
+
+    if (!this._hasDataChanged(sorted, this._selectedIndex)) {
+      setTimeout(() => {
+        this._restoreScrollPosition();
+      }, 50);
       return;
     }
 
-    const imgWidth = this._config.image_width;
-    const imgHeight = this._config.image_height;
+    this._isRendering = true;
+    this._articles = sorted;
+    const selected = this._articles[this._selectedIndex] || null;
+    const cardHeight = this._config.card_height;
+
+    // === ПОЛУЧАЕМ ПОЛНЫЙ ТЕКСТ НОВОСТИ ===
+    const fullText = selected ? this._getFullText(selected) : '';
 
     let html = `
       <style>
-        :host {
-          display: block;
-        }
+        * { box-sizing: border-box; }
         .card {
-          background: var(--ha-card-background, var(--card-background-color, white));
-          border-radius: var(--ha-card-border-radius, 12px);
-          padding: 16px;
+          background: var(--ha-card-background, white);
+          border-radius: 12px;
           box-shadow: var(--ha-card-box-shadow, 0 2px 4px rgba(0,0,0,0.1));
-          max-height: ${this._config.card_height}px;
+          height: ${cardHeight}px;
           display: flex;
           flex-direction: column;
-          font-family: var(--paper-font-common-base, -apple-system, BlinkMacSystemFont, sans-serif);
+          font-family: var(--paper-font-common-base, sans-serif);
+          overflow: hidden;
         }
         .header {
-          font-size: 20px;
+          font-size: 18px;
           font-weight: bold;
-          color: var(--primary-text-color, #333);
-          padding-bottom: 12px;
+          padding: 12px 16px;
           border-bottom: 2px solid var(--divider-color, #e0e0e0);
-          margin-bottom: 12px;
           flex-shrink: 0;
           display: flex;
           justify-content: space-between;
           align-items: center;
         }
         .header .count {
-          font-size: 14px;
+          font-size: 13px;
           font-weight: normal;
           color: var(--secondary-text-color, #666);
         }
-        .articles-container {
+        .main-layout {
+          display: flex;
+          flex: 1;
+          overflow: hidden;
+          min-height: 0;
+        }
+        .content-panel {
+          flex: 3;
           overflow-y: auto;
-          flex: 1;
-          padding-right: 4px;
+          padding: 12px 16px;
+          background: var(--primary-background-color, #fafafa);
         }
-        .articles-container::-webkit-scrollbar {
-          width: 6px;
-        }
-        .articles-container::-webkit-scrollbar-track {
-          background: var(--divider-color, #e0e0e0);
-          border-radius: 3px;
-        }
-        .articles-container::-webkit-scrollbar-thumb {
-          background: var(--secondary-text-color, #999);
-          border-radius: 3px;
-        }
-        .article {
-          padding: 10px 8px;
-          border-bottom: 1px solid var(--divider-color, #e0e0e0);
-          display: flex;
-          gap: 12px;
-          cursor: ${this._config.clickable ? 'pointer' : 'default'};
-          transition: background 0.15s;
-          border-radius: 8px;
-          text-decoration: none;
-          min-height: ${imgHeight + 10}px;
-        }
-        .article:hover {
-          background: var(--hover-color, rgba(0,0,0,0.04));
-        }
-        .article-content {
-          flex: 1;
-          min-width: 0;
-          display: flex;
-          flex-direction: column;
-          justify-content: flex-start;
-        }
-        .article-title {
-          font-weight: 500;
+        .content-panel::-webkit-scrollbar { width: 6px; }
+        .content-panel::-webkit-scrollbar-track { background: var(--divider-color, #e0e0e0); border-radius: 3px; }
+        .content-panel::-webkit-scrollbar-thumb { background: var(--secondary-text-color, #999); border-radius: 3px; }
+        
+        .content-title {
+          font-size: 20px;
+          font-weight: 700;
           color: var(--primary-text-color, #333);
-          margin-bottom: 4px;
-          font-size: 14px;
+          margin-bottom: 8px;
           line-height: 1.3;
         }
-        .article-description {
-          font-size: 12px;
-          color: var(--secondary-text-color, #666);
-          line-height: 1.4;
-          display: ${this._config.show_description ? 'block' : 'none'};
+        .content-meta {
+          display: flex;
+          gap: 12px;
+          font-size: 13px;
+          color: var(--secondary-text-color, #999);
+          margin-bottom: 12px;
+          flex-wrap: wrap;
+          align-items: center;
+          padding-bottom: 10px;
+          border-bottom: 1px solid var(--divider-color, #e0e0e0);
+        }
+        .content-image {
+          width: 100%;
+          max-height: 300px;
+          object-fit: cover;
+          border-radius: 8px;
+          margin-bottom: 14px;
+        }
+        .content-text {
+          font-size: 15px;
+          line-height: 1.8;
+          color: var(--primary-text-color, #333);
+          white-space: pre-wrap;
           word-break: break-word;
         }
-        .article-meta {
+        .content-placeholder {
+          color: var(--secondary-text-color, #999);
+          text-align: center;
+          padding: 60px 20px;
+          font-size: 16px;
+        }
+        .content-link {
+          display: inline-block;
+          margin-top: 14px;
+          color: var(--primary-color, #03a9f4);
+          text-decoration: none;
+          font-weight: 500;
+          padding: 6px 16px;
+          border: 1px solid var(--primary-color, #03a9f4);
+          border-radius: 6px;
+          transition: background 0.2s;
+        }
+        .content-link:hover { 
+          background: var(--primary-color, #03a9f4);
+          color: white;
+        }
+        
+        .list-panel {
+          flex: 2;
+          min-width: 200px;
+          border-left: 1px solid var(--divider-color, #e0e0e0);
+          overflow-y: auto;
+          background: var(--ha-card-background, white);
+        }
+        .list-panel::-webkit-scrollbar { width: 6px; }
+        .list-panel::-webkit-scrollbar-track { background: var(--divider-color, #e0e0e0); border-radius: 3px; }
+        .list-panel::-webkit-scrollbar-thumb { background: var(--secondary-text-color, #999); border-radius: 3px; }
+        
+        .list-header {
+          font-size: 13px;
+          font-weight: 600;
+          color: var(--secondary-text-color, #777);
+          padding: 8px 12px;
+          border-bottom: 1px solid var(--divider-color, #e0e0e0);
+          position: sticky;
+          top: 0;
+          background: var(--ha-card-background, white);
+          z-index: 1;
+        }
+        .list-item {
+          padding: 8px 12px;
+          border-bottom: 1px solid var(--divider-color, #e0e0e0);
+          cursor: pointer;
+          transition: background 0.15s;
+        }
+        .list-item:hover { background: var(--hover-color, rgba(0,0,0,0.05)); }
+        .list-item.active {
+          background: var(--primary-color, #03a9f4);
+          color: white;
+        }
+        .list-item.active .list-title { color: white; }
+        .list-item.active .list-meta { color: rgba(255,255,255,0.8); }
+        
+        .list-title {
+          font-weight: 500;
+          color: var(--primary-text-color, #333);
+          font-size: 13px;
+          line-height: 1.3;
+          margin-bottom: 2px;
+        }
+        .list-meta {
           display: flex;
-          gap: 8px;
-          margin-top: 4px;
-          font-size: 11px;
+          gap: 6px;
+          font-size: 10px;
           color: var(--secondary-text-color, #999);
           flex-wrap: wrap;
           align-items: center;
         }
-        .article-source {
-          background: ${this._config.source_color};
-          color: white;
-          padding: 0 8px;
-          border-radius: 4px;
-          font-size: 10px;
-          line-height: 18px;
-          display: ${this._config.show_source ? 'inline-block' : 'none'};
-        }
-        .article-image-wrapper {
-          flex-shrink: 0;
-          width: ${imgWidth}px;
-          min-width: ${imgWidth}px;
-          max-width: ${imgWidth}px;
-          height: ${imgHeight}px;
-          min-height: ${imgHeight}px;
-          max-height: ${imgHeight}px;
-          border-radius: 6px;
-          overflow: hidden;
-          background: var(--divider-color, #e0e0e0);
-          display: ${this._config.show_image ? 'block' : 'none'};
-          position: relative;
-        }
-        .article-image-wrapper img {
-          width: 100% !important;
-          height: 100% !important;
-          min-width: ${imgWidth}px !important;
-          max-width: ${imgWidth}px !important;
-          min-height: ${imgHeight}px !important;
-          max-height: ${imgHeight}px !important;
-          object-fit: cover !important;
-          display: block !important;
-        }
-        .empty {
-          color: var(--secondary-text-color, #666);
+        .list-empty {
+          color: var(--secondary-text-color, #999);
           text-align: center;
           padding: 30px 20px;
+          font-size: 14px;
+        }
+        @media (max-width: 700px) {
+          .main-layout { flex-direction: column-reverse; }
+          .list-panel { flex: none; height: 200px; border-left: none; border-top: 1px solid var(--divider-color, #e0e0e0); }
+          .content-panel { flex: 1; min-height: 0; }
+          .content-title { font-size: 17px; }
         }
       </style>
+      
       <div class="card">
         <div class="header">
           <span>${this._escapeHtml(this._config.title)}</span>
-          <span class="count">${articles.length} нов.</span>
+          <span class="count">${this._articles.length} нов.</span>
         </div>
-        <div class="articles-container">
+        
+        <div class="main-layout">
+          <div class="content-panel">
     `;
 
-    if (articles.length === 0) {
-      html += `<div class="empty">Нет новостей. Проверьте подключение к интернету.</div>`;
+    if (this._articles.length === 0) {
+      html += `<div class="content-placeholder">Нет новостей</div>`;
+    } else if (selected) {
+      const imageUrl = this._getResizedImageUrl(selected.image);
+      
+      html += `
+        <div class="content-title">${this._escapeHtml(selected.title || 'Без названия')}</div>
+        <div class="content-meta">
+          ${selected.pubDate && this._config.show_date ? `<span>📅 ${this._formatDate(selected.pubDate)}</span>` : ''}
+          ${selected.link && selected.link !== '#' ? `<span>🔗 <a href="${selected.link}" target="_blank" style="color:var(--primary-color);text-decoration:none;">Источник</a></span>` : ''}
+        </div>
+        ${imageUrl && this._config.show_image ? `<img class="content-image" src="${imageUrl}" onerror="this.style.display='none'">` : ''}
+        <div class="content-text">${this._escapeHtml(fullText)}</div>
+        ${selected.link && selected.link !== '#' ? `<a class="content-link" href="${selected.link}" target="_blank">📖 Читать на сайте МЧС</a>` : ''}
+      `;
+    }
+
+    html += `
+          </div>
+          
+          <div class="list-panel">
+            <div class="list-header">📋 Список новостей</div>
+    `;
+
+    if (this._articles.length === 0) {
+      html += `<div class="list-empty">Нет новостей</div>`;
     } else {
-      const sortedArticles = [...articles].sort((a, b) => {
-        const dateA = new Date(a.pubDate || a.updated || 0);
-        const dateB = new Date(b.pubDate || b.updated || 0);
-        return dateB - dateA;
-      });
-
-      sortedArticles.slice(0, this._config.max_articles).forEach((article, index) => {
-        const resizedImageUrl = this._getResizedImageUrl(article.image);
+      this._articles.forEach((article, index) => {
+        const isActive = index === this._selectedIndex;
         
-        const imageHtml = resizedImageUrl && this._config.show_image
-          ? `<div class="article-image-wrapper">
-               <img 
-                 src="${resizedImageUrl}" 
-                 alt=""
-                 loading="lazy"
-                 onerror="this.parentElement.style.display='none'"
-                 style="width:${imgWidth}px;height:${imgHeight}px;object-fit:cover;"
-               >
-             </div>`
-          : '';
-
-        const sourceLabel = article._source && this._config.show_source
-          ? `<span class="article-source">${this._escapeHtml(article._source)}</span>`
-          : '';
-
-        const dateHtml = article.pubDate && this._config.show_date
-          ? `<span>${this._formatDate(article.pubDate)}</span>`
-          : '';
-
-        const link = article.link || '#';
-        const clickHandler = this._config.clickable && link !== '#'
-          ? `window.open('${link}', '_blank')`
-          : '';
-
         html += `
-          <div class="article" onclick="${clickHandler}">
-            <div class="article-content">
-              <div class="article-title">${this._escapeHtml(article.title || 'Без названия')}</div>
-              <div class="article-description">${this._escapeHtml(article.description || '').slice(0, 200)}${(article.description || '').length > 200 ? '...' : ''}</div>
-              <div class="article-meta">
-                ${sourceLabel}
-                ${dateHtml}
+          <div class="list-item ${isActive ? 'active' : ''}" data-index="${index}">
+            <div>
+              <div class="list-title">${this._escapeHtml(article.title || 'Без названия')}</div>
+              <div class="list-meta">
+                ${article.pubDate && this._config.show_date ? `<span>${this._formatDate(article.pubDate)}</span>` : ''}
               </div>
             </div>
-            ${imageHtml}
           </div>
         `;
       });
     }
 
-    html += `</div></div>`;
+    html += `
+          </div>
+        </div>
+      </div>
+    `;
+
     this.shadowRoot.innerHTML = html;
-    this._lastRenderHtml = html;
+
+    this._restoreScrollPosition();
+
+    const items = this.shadowRoot.querySelectorAll('.list-item');
+    items.forEach((item) => {
+      item.addEventListener('click', (event) => {
+        const listPanel = this.shadowRoot?.querySelector('.list-panel');
+        if (listPanel) {
+          this._listScrollPosition = listPanel.scrollTop;
+        }
+        
+        const index = parseInt(event.currentTarget.dataset.index, 10);
+        if (!isNaN(index) && index !== this._selectedIndex) {
+          this._selectedIndex = index;
+          this._lastRenderHash = '';
+          this._render();
+        }
+      });
+    });
+
+    this._isRendering = false;
   }
 
   getCardSize() {
-    return 3;
+    return 5;
   }
 }
 
-// Регистрируем карточку для Lovelace
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: 'news-mchs-card',
-  name: 'Сводка ЧС',
+  name: 'Сводка ЧС (двухпанельная)',
   preview: true,
-  description: 'Отображение новостей МЧС из RSS-ленты'
+  description: 'Двухпанельный просмотр новостей МЧС с полным текстом'
 });
 
 if (!customElements.get('news-mchs-card')) {
