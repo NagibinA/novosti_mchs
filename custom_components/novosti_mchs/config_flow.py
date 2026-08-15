@@ -34,7 +34,7 @@ class NovostiMCHSConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             vol.Required(CONF_NAME, default=DEFAULT_NAME): str,
             vol.Required(CONF_RSS_URL, default="https://78.mchs.gov.ru/deyatelnost/press-centr/operativnaya-informaciya/rss"): str,
             vol.Optional(CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL): vol.All(
-                vol.Coerce(int), vol.Range(min=60, max=3600, msg="Интервал от 60 до 3600 секунд")
+                vol.Coerce(int), vol.Range(min=60, max=3600)
             ),
         })
 
@@ -62,15 +62,42 @@ class NovostiMCHSOptionsFlow(config_entries.OptionsFlow):
 
     async def async_step_init(self, user_input=None):
         """Шаг настройки опций."""
+        errors = {}
+        
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            # Проверяем URL
+            if not user_input[CONF_RSS_URL].startswith(("http://", "https://")):
+                errors["base"] = "invalid_url"
+            else:
+                # Обновляем данные
+                new_data = {**self.config_entry.data}
+                new_data[CONF_RSS_URL] = user_input[CONF_RSS_URL]
+                new_data[CONF_SCAN_INTERVAL] = user_input[CONF_SCAN_INTERVAL]
+                
+                self.hass.config_entries.async_update_entry(
+                    self.config_entry,
+                    data=new_data
+                )
+                
+                # Перезагружаем интеграцию
+                await self.hass.config_entries.async_reload(self.config_entry.entry_id)
+                
+                return self.async_create_entry(title="", data={})
+
+        # Получаем текущие значения
+        current_rss = self.config_entry.data.get(CONF_RSS_URL, "")
+        current_interval = self.config_entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
 
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema({
-                vol.Required(CONF_RSS_URL, default=self.config_entry.data.get(CONF_RSS_URL)): str,
-                vol.Optional(CONF_SCAN_INTERVAL, default=self.config_entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)): vol.All(
+                vol.Required(CONF_RSS_URL, default=current_rss): str,
+                vol.Optional(CONF_SCAN_INTERVAL, default=current_interval): vol.All(
                     vol.Coerce(int), vol.Range(min=60, max=3600)
                 ),
-            })
+            }),
+            errors=errors,
+            description_placeholders={
+                "example_url": "https://78.mchs.gov.ru/deyatelnost/press-centr/operativnaya-informaciya/rss"
+            }
         )
