@@ -1,8 +1,8 @@
-import feedparser
 import async_timeout
 from datetime import timedelta
 import logging
 import re
+import xml.etree.ElementTree as ET
 
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.update_coordinator import (
@@ -10,6 +10,7 @@ from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
 )
 from homeassistant.const import CONF_NAME
+import aiohttp
 
 from .const import DOMAIN, DEFAULT_SCAN_INTERVAL, CONF_RSS_URL, CONF_SOURCES_COUNT, ATTR_ARTICLES
 
@@ -58,21 +59,17 @@ class RSSDataUpdateCoordinator(DataUpdateCoordinator):
     async def _async_update_data(self):
         try:
             async with async_timeout.timeout(30):
-                feed = await self.hass.async_add_executor_job(
-                    feedparser.parse, self.rss_url
-                )
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(self.rss_url) as response:
+                        if response.status != 200:
+                            _LOGGER.error(f"Ошибка загрузки RSS: статус {response.status}")
+                            return {"articles": []}
+                        xml_text = await response.text()
 
-                articles = []
-                for entry in feed.entries[:10]:
-                    article = {
-                        "title": entry.get("title", "Без названия"),
-                        "link": entry.get("link", ""),
-                        "description": self._clean_description(entry.get("description", "")),
-                        "pubDate": self._format_date(entry.get("published", entry.get("updated", ""))),
-                        "image": self._extract_image(entry),
-                        "source": self.rss_url,
-                    }
-                    articles.append(article)
+                # Парсим XML в отдельном потоке
+                articles = await self.hass.async_add_executor_job(
+                    self._parse_rss, xml_text
+                )
 
                 self.articles = articles
                 return {"articles": articles}
@@ -81,6 +78,39 @@ class RSSDataUpdateCoordinator(DataUpdateCoordinator):
             _LOGGER.error(f"Ошибка загрузки RSS: {e}")
             return {"articles": []}
 
+    def _parse_rss(self, xml_text):
+        """Парсинг RSS ленты с помощью ElementTree"""
+        articles = []
+        try:
+            root = ET.fromstring(xml_text)
+            
+            # Ищем все элементы <item>
+            for item in root.findall(".//item")[:10]:
+                # Извлекаем данные
+                title = item.find("title")
+                link = item.find("link")
+                description = item.find("description")
+                pub_date = item.find("pubDate")
+                
+                # Пытаемся найти картинку
+                image = self._extract_image_from_item(item)
+                
+                article = {
+                    "title": title.text if title is not None and title.text else "Без названия",
+                    "link": link.text if link is not None and link.text else "",
+                    "description": self._clean_description(description.text if description is not None else ""),
+                    "pubDate": pub_date.text if pub_date is not None and pub_date.text else "",
+                    "image": image,
+                }
+                articles.append(article)
+                
+        except ET.ParseError as e:
+            _LOGGER.error(f"Ошибка парсинга XML: {e}")
+        except Exception as e:
+            _LOGGER.error(f"Ошибка обработки RSS: {e}")
+            
+        return articles
+
     def _clean_description(self, description):
         if not description:
             return ""
@@ -88,28 +118,37 @@ class RSSDataUpdateCoordinator(DataUpdateCoordinator):
         clean = re.sub(r'\s+', ' ', clean).strip()
         return clean[:250] + "..." if len(clean) > 250 else clean
 
-    def _extract_image(self, entry):
-        if hasattr(entry, 'media_content') and entry.media_content:
-            for media in entry.media_content:
-                if 'url' in media:
-                    return media['url']
+    def _extract_image_from_item(self, item):
+        """Извлечение изображения из элемента item"""
+        # Проверяем <enclosure>
+        enclosure = item.find("enclosure")
+        if enclosure is not None:
+            url = enclosure.get("url")
+            if url:
+                return url
         
-        if hasattr(entry, 'links'):
-            for link in entry.links:
-                if link.get('type', '').startswith('image/'):
-                    return link.get('href')
+        # Проверяем <media:content>
+        media_content = item.find("media:content")
+        if media_content is not None:
+            url = media_content.get("url")
+            if url:
+                return url
         
-        if hasattr(entry, 'description'):
-            img_match = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', entry.description)
+        # Проверяем <image>
+        image = item.find("image")
+        if image is not None:
+            url = image.get("url") or image.text
+            if url:
+                return url
+        
+        # Ищем картинку в описании
+        description = item.find("description")
+        if description is not None and description.text:
+            img_match = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', description.text)
             if img_match:
                 return img_match.group(1)
         
         return None
-
-    def _format_date(self, date_str):
-        if not date_str:
-            return ""
-        return date_str
 
 
 class RSSNewsSensor(CoordinatorEntity, Entity):
