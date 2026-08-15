@@ -24,6 +24,7 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     CONF_RSS_URL,
     CONF_SOURCES_COUNT,
+    CONF_SCAN_INTERVAL,  # ← ДОБАВЛЕН ИМПОРТ
     ATTR_ARTICLES,
 )
 
