@@ -39,6 +39,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 def _copy_lovelace_files(hass):
     """Копирует файлы карточки в www/community/."""
+    # Карточка лежит ВНУТРИ папки интеграции (скопирована HACS)
     source_file = hass.config.path("custom_components/novosti_mchs/news-mchs-card.js")
     target_dir = hass.config.path("www/community/novosti_mchs/lovelace/")
     target_file = hass.config.path("www/community/novosti_mchs/lovelace/news-mchs-card.js")
@@ -49,9 +50,13 @@ def _copy_lovelace_files(hass):
 
     if not os.path.exists(source_file):
         _LOGGER.error("❌ Файл карточки не найден: %s", source_file)
+        _LOGGER.error("   news-mchs-card.js должен лежать в custom_components/novosti_mchs/")
         return
 
+    # Создаём папку
     os.makedirs(target_dir, exist_ok=True)
+    
+    # Копируем
     shutil.copy2(source_file, target_file)
     _LOGGER.info("✅ Карточка скопирована: %s", target_file)
 
@@ -92,19 +97,14 @@ async def _register_lovelace_resource(hass: HomeAssistant) -> None:
             )
             _LOGGER.info("✅ Карточка Новости МЧС зарегистрирована в Lovelace")
         else:
-            # Fallback для старых версий
-            if isinstance(resources, list):
-                resources.append({"url": card_url, "type": "module"})
-                _LOGGER.info("✅ Карточка Новости МЧС добавлена в ресурсы")
-            else:
-                _LOGGER.warning("⚠️ Не удалось зарегистрировать карточку")
-                _LOGGER.warning(
-                    "   Добавьте ресурс вручную:\n"
-                    "   1. Настройки → Панели → Ресурсы → Добавить ресурс\n"
-                    "   URL: %s\n"
-                    "   Тип: JavaScript Module",
-                    card_url
-                )
+            _LOGGER.warning("⚠️ Не удалось зарегистрировать карточку")
+            _LOGGER.warning(
+                "   Добавьте ресурс вручную:\n"
+                "   1. Настройки → Панели → Ресурсы → Добавить ресурс\n"
+                "   URL: %s\n"
+                "   Тип: JavaScript Module",
+                card_url
+            )
                 
     except Exception as e:
         _LOGGER.error("❌ Ошибка регистрации карточки: %s", e)
