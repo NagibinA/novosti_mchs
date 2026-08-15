@@ -1,0 +1,9 @@
+{
+  "name": "Новости МЧС",
+  "content_in_root": false,
+  "render_readme": true,
+  "domains": ["sensor"],
+  "country": "RU",
+  "homeassistant": "2024.1.0",
+  "persistent_directory": "lovelace"
+}
